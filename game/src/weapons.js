@@ -10,7 +10,7 @@ export const WEAPONS = [
     name: 'Piston Sidearm',
     price: 0,
     damage: 24,
-    headMult: 3.2,
+    headMult: 4, // foundry standard headshot multiplier — see hitmodel.js
     fireMs: 260,
     auto: false,
     mag: 12,
@@ -29,7 +29,7 @@ export const WEAPONS = [
     name: 'Slag Scattergun',
     price: 900,
     damage: 11,
-    headMult: 1.6,
+    headMult: 2, // per pellet — ×4 × 8 pellets would be a guaranteed kill; see hitmodel.js
     fireMs: 880,
     auto: false,
     mag: 6,
@@ -48,7 +48,7 @@ export const WEAPONS = [
     name: 'Rivet Carbine',
     price: 1700,
     damage: 30,
-    headMult: 3.4,
+    headMult: 4, // foundry standard — see hitmodel.js
     fireMs: 118,
     auto: true,
     mag: 25,
@@ -67,7 +67,7 @@ export const WEAPONS = [
     name: 'Forge Lance',
     price: 2700,
     damage: 36,
-    headMult: 3.6,
+    headMult: 4, // foundry standard — see hitmodel.js
     fireMs: 102,
     auto: true,
     mag: 30,
@@ -108,6 +108,18 @@ export const GRENADE = {
   price: 300,
   damage: 85,
   radius: 5.2,
+};
+
+// The smoke canister deals no damage at all. Thrown with H, it bursts
+// into a soot cloud that blocks sight lines: Foundry.lineOfSight()
+// treats an active cloud as opaque, so bots genuinely cannot see (or
+// lock onto) anyone behind it until it thins out. See smoke.js.
+export const SMOKE_GRENADE = {
+  id: 'sootcan',
+  name: 'Soot Canister',
+  price: 200,
+  radius: 3.4, // sight-blocking radius of the cloud, metres
+  duration: 11, // seconds the cloud stays opaque
 };
 
 export function weaponById(id) {

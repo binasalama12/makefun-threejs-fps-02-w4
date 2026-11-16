@@ -11,10 +11,13 @@
 // still scene per mode and flags window.__shotReady after its first frame.
 
 import * as THREE from 'three';
-import { Foundry, PLANT_ZONE, WARDEN_ROUTES, REAVER_ROUTES, WARDEN_SPAWNS, REAVER_SPAWNS } from './world.js';
+import { Foundry, PLANT_ZONE, WARDEN_SPAWNS, REAVER_SPAWNS } from './world.js';
+import { WARDEN_ROUTES, REAVER_ROUTES, laneName } from './routes.js';
 import { Player } from './player.js';
 import { Bot } from './bots.js';
-import { WEAPONS, GRENADE, weaponById, currentSpread } from './weapons.js';
+import { WEAPONS, GRENADE, SMOKE_GRENADE, weaponById, currentSpread } from './weapons.js';
+import { resolveHit, botHitPart } from './hitmodel.js';
+import { SmokeField } from './smoke.js';
 import { Hud } from './hud.js';
 import { SoundBank } from './audio.js';
 import { Rng } from './rng.js';
@@ -39,6 +42,10 @@ const camera = new THREE.PerspectiveCamera(74, innerWidth / innerHeight, 0.08, 2
 scene.add(camera);
 
 const world = new Foundry(scene);
+const smoke = new SmokeField(scene);
+// Soot clouds block bot sight: the world's one lineOfSight() test now
+// consults the smoke field, so every perception check honours smoke.
+world.smokeTest = (ax, az, bx, bz) => smoke.blocksSight(ax, az, bx, bz);
 const hud = new Hud(document);
 const sounds = new SoundBank();
 
@@ -68,11 +75,11 @@ function buildCrews() {
   for (const b of [...allies, ...reavers]) scene.remove(b.group);
   allies = ALLY_DEFS.map((d, i) => new Bot(scene, {
     team: 'warden', name: d.name, spawn: WARDEN_SPAWNS[i + 1],
-    route: WARDEN_ROUTES[i], weaponId: d.weaponId, skill: d.skill,
+    route: WARDEN_ROUTES[i], lane: laneName('warden', i), weaponId: d.weaponId, skill: d.skill,
   }));
   reavers = REAVER_DEFS.map((d, i) => new Bot(scene, {
     team: 'reaver', name: d.name, spawn: REAVER_SPAWNS[i],
-    route: REAVER_ROUTES[i], weaponId: d.weaponId, skill: d.skill,
+    route: REAVER_ROUTES[i], lane: laneName('reaver', i), weaponId: d.weaponId, skill: d.skill,
   }));
   for (const b of [...allies, ...reavers]) statFor(b.name);
   statFor('You');
@@ -103,6 +110,7 @@ const loadout = {
   primaryId: null,
   current: 'piston',
   grenades: 0,
+  smokes: 0,
   mags: {}, // weaponId -> {mag, reserve}
 };
 function magState(id) {
@@ -192,6 +200,7 @@ addEventListener('keydown', (e) => {
   else if (G.phase === 'live') {
     if (e.code === 'KeyR') startReload();
     if (e.code === 'KeyG') throwGrenade();
+    if (e.code === 'KeyH') throwSmoke();
     if (e.code === 'Digit1' && loadout.primaryId) switchWeapon(loadout.primaryId);
     if (e.code === 'Digit2') switchWeapon('piston');
   }
@@ -246,10 +255,17 @@ function handleBuyKey(code) {
     sounds.buy();
     refreshBuy();
   }
+  if (code === 'Digit7') {
+    if (G.money < SMOKE_GRENADE.price) { sounds.denied(); return; }
+    G.money -= SMOKE_GRENADE.price;
+    loadout.smokes++;
+    sounds.buy();
+    refreshBuy();
+  }
   if (code === 'Enter' || code === 'Space') endBuyPhase();
 }
 function refreshBuy() {
-  hud.showBuy(G.money, WEAPONS, loadout.primaryId, GRENADE.price, loadout.grenades);
+  hud.showBuy(G.money, WEAPONS, loadout.primaryId, GRENADE.price, loadout.grenades, SMOKE_GRENADE.price, loadout.smokes);
 }
 function switchWeapon(id) {
   loadout.current = id;
@@ -306,12 +322,13 @@ function playerShoot(now) {
       end = hit.point;
       if (ud && ud.bot) {
         const bot = ud.bot;
-        let dmg = def.damage * (ud.part === 'head' ? def.headMult : 1);
-        if (hit.distance > def.range) dmg *= 0.4;
-        const died = bot.takeDamage(dmg);
-        hud.hitmark(ud.part === 'head');
-        sounds.hit(ud.part === 'head');
-        if (died) onKill(player, bot);
+        // one damage model for every shooter — see hitmodel.js. The
+        // head mesh is a distinct hitbox (userData.part === 'head').
+        const res = resolveHit(def, ud.part, hit.distance);
+        const died = bot.takeDamage(res.damage);
+        hud.hitmark(res.isHead);
+        sounds.hit(res.isHead);
+        if (died) onKill(player, bot, { weaponName: def.name, headshot: res.isHead });
       } else {
         spawnSpark(hit.point);
       }
@@ -335,13 +352,14 @@ function botShoot(bot, target, dist) {
   p = Math.max(0.05, Math.min(0.78, p));
   let end;
   if (liveRng.next() < p) {
-    const head = liveRng.chance(0.14);
+    // bots strike head or body through the same hitmodel as the player
+    const part = botHitPart(liveRng);
+    const head = part === 'head';
     end = head ? target.headCenter(new THREE.Vector3()) : target.chestCenter(new THREE.Vector3());
-    let dmg = bot.weapon.damage * (head ? 2.2 : 1);
-    if (dist > bot.weapon.range) dmg *= 0.5;
-    const died = target.takeDamage(dmg);
+    const res = resolveHit(bot.weapon, part, dist);
+    const died = target.takeDamage(res.damage);
     if (target.isPlayer) { hud.damageFlash(); sounds.hurt(); }
-    if (died) onKill(bot, target);
+    if (died) onKill(bot, target, { weaponName: bot.weapon.name, headshot: head });
   } else {
     end = target.chestCenter(new THREE.Vector3());
     end.x += (liveRng.next() - 0.5) * 2.4;
@@ -354,11 +372,15 @@ function botShoot(bot, target, dist) {
   }
 }
 
-function onKill(killer, victim) {
+function onKill(killer, victim, opts = {}) {
   statFor(killer.name).kills++;
   statFor(victim.name).deaths++;
   const kName = killer.isPlayer ? 'You' : killer.name;
-  hud.feedLine(`${kName} ▸ ${victim.name}`, victim.team === 'reaver' ? 'good' : 'bad');
+  hud.killFeed(kName, victim.name, {
+    weaponName: opts.weaponName, headshot: !!opts.headshot,
+    cls: victim.team === 'reaver' ? 'good' : 'bad',
+  });
+  if (opts.headshot && killer.isPlayer) sounds.headshotKill();
   if (killer.isPlayer) { G.money += 300; hud.feedLine('+$300 salvage bounty', 'good'); }
   checkRoundEnd();
 }
@@ -403,15 +425,51 @@ function explode(at) {
     const d = b.pos.distanceTo(at);
     if (d < GRENADE.radius) {
       const died = b.takeDamage(GRENADE.damage * (1 - d / (GRENADE.radius * 1.4)));
-      if (died) onKill(player, b);
+      if (died) onKill(player, b, { weaponName: GRENADE.name });
     }
   }
+}
+
+// ---------- smoke canisters ----------
+// Same lobbed flight as the Cinder Grenade, but the payload is a Soot
+// cloud (smoke.js): no damage, pure sight denial. Bots caught on the
+// far side lose their target and fall back to last-seen pursuit.
+const smokesInFlight = [];
+const smokeGeo = new THREE.SphereGeometry(0.11, 10, 10);
+const smokeMat = new THREE.MeshStandardMaterial({ color: 0x8d8578, roughness: 0.9, metalness: 0.1 });
+function throwSmoke() {
+  if (loadout.smokes <= 0 || !player.alive || reloading > 0) return;
+  loadout.smokes--;
+  const mesh = new THREE.Mesh(smokeGeo, smokeMat);
+  mesh.raycast = () => {};
+  const origin = player.eyePos(new THREE.Vector3());
+  camera.getWorldDirection(tmpV);
+  mesh.position.copy(origin).add(tmpV.clone().multiplyScalar(0.6));
+  scene.add(mesh);
+  smokesInFlight.push({ mesh, vel: tmpV.clone().multiplyScalar(12).add(new THREE.Vector3(0, 3.2, 0)), fuse: 1.1 });
+  sounds.tone(420, 640, 0.08, 'sine', 0.18);
+}
+function updateSmokes(dt) {
+  for (let i = smokesInFlight.length - 1; i >= 0; i--) {
+    const g = smokesInFlight[i];
+    g.fuse -= dt;
+    g.vel.y -= 16 * dt;
+    g.mesh.position.addScaledVector(g.vel, dt);
+    if (g.mesh.position.y < 0.12) { g.mesh.position.y = 0.12; g.vel.y *= -0.3; g.vel.x *= 0.7; g.vel.z *= 0.7; }
+    if (g.fuse <= 0) {
+      smoke.burst(g.mesh.position, SMOKE_GRENADE);
+      sounds.smokeHiss();
+      scene.remove(g.mesh);
+      smokesInFlight.splice(i, 1);
+    }
+  }
+  smoke.update(dt);
 }
 
 // ---------- round flow ----------
 function startMatch() {
   G.round = 1; G.scoreW = 0; G.scoreR = 0; G.money = 800;
-  loadout.primaryId = null; loadout.current = 'piston'; loadout.grenades = 0; loadout.mags = {};
+  loadout.primaryId = null; loadout.current = 'piston'; loadout.grenades = 0; loadout.smokes = 0; loadout.mags = {};
   stats.clear();
   startRound();
 }
@@ -422,6 +480,9 @@ function startRound() {
   charge.visible = false;
   for (const g of grenadesInFlight) scene.remove(g.mesh);
   grenadesInFlight.length = 0;
+  for (const g of smokesInFlight) scene.remove(g.mesh);
+  smokesInFlight.length = 0;
+  smoke.clear();
   reloading = 0; fireTimer = 0;
   // everyone keeps their bought gun between rounds; ammo refills
   for (const id of Object.keys(loadout.mags)) {
@@ -496,8 +557,9 @@ function updatePlant(dt) {
         sounds.plantBeep(true);
         hud.banner('CHARGE PLANTED', 'Hold the furnace for 35 seconds');
         hud.feedLine('The slag charge is live +$350', 'good');
-        // reavers converge on the charge to defuse it
-        for (const b of reavers) if (b.alive) { b.route = [{ x: G.chargePos.x, z: G.chargePos.z }]; b.routeIdx = 0; }
+        // reavers converge on the charge to defuse it — drop any stale
+        // pursuit memory so the objective, not an old sighting, leads
+        for (const b of reavers) if (b.alive) { b.route = [{ x: G.chargePos.x, z: G.chargePos.z }]; b.routeIdx = 0; b.hasLastSeen = false; }
       }
     } else {
       G.plantProgress = Math.max(0, G.plantProgress - dt * 0.7);
@@ -585,6 +647,7 @@ function stepSim(dt) {
 
   updatePlant(dt);
   updateGrenades(dt);
+  updateSmokes(dt);
   checkRoundEnd();
 }
 
@@ -632,7 +695,7 @@ function refreshHud() {
     timeLeft: G.planted ? G.plantTimer : G.timeLeft, planted: G.planted,
     mag: st.mag, reserve: st.reserve, reloading: reloading > 0,
     scoreW: G.scoreW, scoreR: G.scoreR, weaponName: def.name,
-    grenades: loadout.grenades, objective,
+    grenades: loadout.grenades, smokes: loadout.smokes, objective,
     spread: currentSpread(def, player), plantProgress: G.plantProgress,
   });
 }
@@ -642,7 +705,7 @@ function poseShotScene() {
   buildCrews();
   // shared dressing: mid-match economy and loadout for the HUD
   G.money = 3350; G.round = 4; G.scoreW = 3; G.scoreR = 2;
-  loadout.primaryId = 'lance'; loadout.current = 'lance'; loadout.grenades = 1;
+  loadout.primaryId = 'lance'; loadout.current = 'lance'; loadout.grenades = 1; loadout.smokes = 1;
   loadout.mags = { lance: { mag: 17, reserve: 64 }, piston: { mag: 12, reserve: 60 } };
   buildViewmodel();
 
@@ -698,8 +761,11 @@ function poseShotScene() {
     spawnTracer(new THREE.Vector3(-2.0, 1.35, -4.2), new THREE.Vector3(2.8, 1.1, 3.6), 0x9fe8dc);
     flashLight.position.set(3.3, 1.5, 3.4);
     flashLight.intensity = 30;
-    hud.feedLine('Sella ▸ Kessa', 'good');
-    hud.feedLine('Vex ▸ Bram', 'bad');
+    hud.killFeed('Sella', 'Kessa', { weaponName: 'Slag Scattergun', cls: 'good' });
+    hud.killFeed('Vex', 'Bram', { weaponName: 'Forge Lance', headshot: true, cls: 'bad' });
+    // a Soot cloud hangs over the west runnel bank — sight denied there
+    smoke.burst(new THREE.Vector3(-8.5, 0, -2.5), SMOKE_GRENADE);
+    smoke.update(1.2);
     refreshHud();
   }
 

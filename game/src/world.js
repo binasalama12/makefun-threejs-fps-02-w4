@@ -7,6 +7,11 @@
 // emissive material and flicker through update().
 
 import * as THREE from 'three';
+import { WARDEN_ROUTES, REAVER_ROUTES } from './routes.js';
+
+// The named route network lives in routes.js (one job per module);
+// re-exported here so existing imports from world.js keep working.
+export { WARDEN_ROUTES, REAVER_ROUTES };
 
 export const ARENA = { minX: -30, maxX: 30, minZ: -22, maxZ: 22 };
 export const PLANT_ZONE = { x: 0, z: -15.5, radius: 4.6 };
@@ -39,6 +44,7 @@ export class Foundry {
     this.colliders = []; // {minX,maxX,minZ,maxZ,h}
     this.losBlockers = []; // colliders tall enough to break sight lines
     this.hazards = []; // molten strips {minX,maxX,minZ,maxZ}
+    this.smokeTest = null; // set by main.js: (ax,az,bx,bz) => bool, from smoke.js
     this.moltenMats = [MAT.molten, MAT.moltenHot];
     this.flickerT = 0;
     this.build();
@@ -229,10 +235,14 @@ export class Foundry {
   }
 
   // Is the straight line between two floor points free of tall cover?
+  // A thick Soot Canister cloud blocks sight exactly like a wall does —
+  // this is the single sight test every bot uses, so smoke is honoured
+  // by perception, pursuit and firing decisions alike.
   lineOfSight(ax, az, bx, bz) {
     for (const c of this.losBlockers) {
       if (segmentHitsBox(ax, az, bx, bz, c)) return false;
     }
+    if (this.smokeTest && this.smokeTest(ax, az, bx, bz)) return false;
     return true;
   }
 
@@ -279,19 +289,9 @@ function segmentHitsBox(ax, az, bx, bz, c) {
   return true;
 }
 
-// Patrol / push routes. Wardens start south and push north to the furnace;
-// Reavers start north and fan out to hold the bridges and mid.
-export const WARDEN_ROUTES = [
-  [{ x: -3, z: 18 }, { x: -13, z: 10 }, { x: -14, z: 0 }, { x: -13, z: -10 }, { x: -6, z: -14 }, { x: -2, z: -15 }],
-  [{ x: 0, z: 18 }, { x: 0, z: 10 }, { x: 0, z: 0 }, { x: 1, z: -10 }, { x: 2, z: -14.5 }],
-  [{ x: 3, z: 18 }, { x: 13, z: 10 }, { x: 14, z: 0 }, { x: 13, z: -10 }, { x: 7, z: -14 }, { x: 3, z: -15.5 }],
-];
-export const REAVER_ROUTES = [
-  [{ x: -12, z: -18 }, { x: -13, z: -10 }, { x: -14, z: 0 }, { x: -12, z: 4 }],
-  [{ x: -4, z: -18 }, { x: -2, z: -11 }, { x: 0, z: -3 }, { x: 1, z: 3 }],
-  [{ x: 5, z: -18 }, { x: 8, z: -12 }, { x: 12, z: -6 }, { x: 10, z: 1 }],
-  [{ x: 13, z: -18 }, { x: 14, z: -10 }, { x: 14, z: 0 }, { x: 12, z: 5 }],
-];
+// Patrol / push routes moved to routes.js (named waypoints per lane);
+// WARDEN_ROUTES / REAVER_ROUTES are imported and re-exported at the top
+// of this file. Spawn pads stay here — they are floor dressing.
 export const WARDEN_SPAWNS = [
   { x: -4.5, z: 19 }, { x: -1.5, z: 19.5 }, { x: 1.5, z: 19.5 }, { x: 4.5, z: 19 },
 ];

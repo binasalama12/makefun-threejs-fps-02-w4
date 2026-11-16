@@ -77,7 +77,18 @@ export class SoundBank {
   }
 
   hit(head) {
+    // head hits ring a clear third higher than body hits — the audible
+    // half of the headshot model (the gold hitmarker is the visual half)
     this.tone(head ? 1250 : 880, head ? 900 : 660, 0.07, 'sine', 0.4);
+  }
+
+  headshotKill() {
+    this.tone(1560, 1560, 0.09, 'sine', 0.45);
+    setTimeout(() => this.tone(2090, 2090, 0.14, 'sine', 0.4), 80);
+  }
+
+  smokeHiss() {
+    this.noise(0.9, 3200, 0.3, 'highpass');
   }
 
   hurt() {

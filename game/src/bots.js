@@ -1,9 +1,15 @@
 // bots.js — the foundry crews. Each bot is a simple state machine:
-// follow its assigned route across the hall, and when it can see an
-// opponent, stop, settle, and fire short bursts. Bots hear gunfire too:
-// a shot fired nearby turns them toward the noise. Accuracy is honest —
-// a bot's hit chance falls off with range and with how fast its target
-// is moving, and it needs a beat to react when a target first appears.
+// follow its assigned named route (routes.js) across the hall lane by
+// lane, hold the final point covering that lane, and when it can see an
+// opponent, stop, settle, and fire short bursts. Losing sight does not
+// mean forgetting: the bot pursues the opponent's LAST SEEN position,
+// searches it briefly, then falls back to its route. Bots hear gunfire
+// too — a nearby shot writes the shooter's position into that same
+// memory, so sound pulls bots off their route just like sight does.
+// Accuracy is honest — a bot's hit chance falls off with range and with
+// how fast its target is moving, and it needs a beat to react when a
+// target first appears. Sight itself is world.lineOfSight(), which
+// walls AND thick smoke clouds both block.
 
 import * as THREE from 'three';
 import { weaponById } from './weapons.js';
@@ -28,11 +34,18 @@ export class Bot {
     this.mag = this.weapon.mag;
     this.route = opts.route;
     this.routeIdx = 0;
+    this.lane = opts.lane || ''; // named lane from routes.js, e.g. 'West Lane'
     this.holdAtEnd = opts.holdAtEnd !== false;
     this.skill = opts.skill; // 0..1, scales reaction time and hit chance
-    this.state = 'advance'; // advance | engage | hold | dead
+    this.state = 'advance'; // advance | engage | pursue | search | hold | dead
     this.target = null;
     this.seenFor = 0;
+    // --- tactical memory: where the enemy was when sight/sound was lost ---
+    this.lastSeenPos = new THREE.Vector3();
+    this.hasLastSeen = false;
+    this.lastSeenAge = Infinity; // seconds since the memory was written
+    this.searchT = 0; // time spent scanning an arrived-at last-seen point
+    this.holdScanT = Math.random() * 6; // phase offset for hold-position scanning
     this.fireCd = 0;
     this.burstLeft = 0;
     this.burstPause = 0;
@@ -117,6 +130,7 @@ export class Bot {
     const { world, opponents, rng } = ctx;
     this.fireCd -= dt;
     this.heardT -= dt;
+    this.lastSeenAge += dt;
     this.heat = Math.max(0, this.heat - dt * 1.6);
 
     if (this.reloadT > 0) {
@@ -127,7 +141,6 @@ export class Bot {
     // --- perception: nearest visible living opponent ---
     let visible = null;
     let visibleDist = Infinity;
-    const myEye = this.eyePos(new THREE.Vector3());
     for (const o of opponents) {
       if (!o.alive) continue;
       const d = this.pos.distanceTo(o.pos);
@@ -139,9 +152,18 @@ export class Bot {
     if (visible) {
       if (this.target !== visible) { this.target = visible; this.seenFor = 0; }
       this.seenFor += dt;
+      // refresh the tactical memory every frame the target is visible
+      this.lastSeenPos.copy(visible.pos);
+      this.hasLastSeen = true;
+      this.lastSeenAge = 0;
+      this.searchT = 0;
     } else if (this.heardT > 0 && this.heardFrom) {
-      // turn toward recent gunfire even without a sight line
+      // gunfire without a sight line still writes the memory: the bot
+      // turns toward the noise now and pursues that spot below
       this.yaw = Math.atan2(this.heardFrom.x - this.pos.x, this.heardFrom.z - this.pos.z);
+      this.lastSeenPos.copy(this.heardFrom);
+      this.hasLastSeen = true;
+      this.lastSeenAge = 0;
       this.target = null;
       this.seenFor = 0;
     } else {
@@ -171,6 +193,26 @@ export class Bot {
       moveZ = fz * away + sz * 0.7;
       wantSpeed = away !== 0 ? 3.1 : 1.6;
       this.tryShoot(ctx, visibleDist);
+    } else if (this.hasLastSeen && this.lastSeenAge < 7) {
+      // --- pursuit: sight (or sound) was lost, but not forgotten ---
+      // Advance on the last seen position; on arrival, sweep the area
+      // briefly, then give the memory up and fall back to the route.
+      this.crouching = false;
+      const dx = this.lastSeenPos.x - this.pos.x, dz = this.lastSeenPos.z - this.pos.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > 1.3) {
+        this.state = 'pursue';
+        this.searchT = 0;
+        this.yaw = Math.atan2(dx, dz);
+        moveX = dx / dist;
+        moveZ = dz / dist;
+        wantSpeed = 3.6;
+      } else {
+        this.state = 'search';
+        this.searchT += dt;
+        this.yaw += dt * 1.5; // slow full sweep of the spot
+        if (this.searchT > 2.2) { this.hasLastSeen = false; this.searchT = 0; }
+      }
     } else {
       this.state = this.routeIdx >= this.route.length ? 'hold' : 'advance';
       this.crouching = false;
@@ -181,6 +223,13 @@ export class Bot {
         if (dist < 1.1) {
           if (this.routeIdx < this.route.length - 1) this.routeIdx++;
           else if (!this.holdAtEnd) this.routeIdx = 0;
+          else {
+            // --- hold: cover the lane, scanning around its facing ---
+            this.state = 'hold';
+            this.holdScanT += dt;
+            const baseYaw = wp.holdYaw !== undefined ? wp.holdYaw : (this.team === 'warden' ? Math.PI : 0);
+            this.yaw = baseYaw + Math.sin(this.holdScanT * 0.6) * 0.55;
+          }
         } else {
           this.yaw = Math.atan2(dx, dz);
           moveX = dx / dist;
@@ -213,7 +262,6 @@ export class Bot {
     this.group.rotation.y = this.yaw;
     const bob = this.speed2d > 0.2 ? Math.abs(Math.sin(this.walkPhase)) * 0.05 : 0;
     this.group.position.y += bob;
-    void myEye;
   }
 
   tryShoot(ctx, dist) {

@@ -39,7 +39,7 @@ export class Hud {
     this.set('sw', 'score-w', String(s.scoreW));
     this.set('sr', 'score-r', String(s.scoreR));
     this.set('wname', 'weapon-name', s.weaponName);
-    this.set('gren', 'grenades', `CINDER GRENADE × ${s.grenades}  [G]`);
+    this.set('gren', 'grenades', `CINDER × ${s.grenades} [G] · SOOT × ${s.smokes || 0} [H]`);
     this.set('obj', 'objective', s.objective);
     const spreadPx = 6 + s.spread * 620;
     this.el.crosshair.style.setProperty('--gap', `${spreadPx.toFixed(1)}px`);
@@ -76,6 +76,33 @@ export class Hud {
     setTimeout(() => { div.remove(); }, 4900);
   }
 
+  // The kill feed proper: one structured line per kill — who killed
+  // whom, with what, and a gold HEADSHOT tag when the killing hit was a
+  // head hit (hitmodel.js decides; main.js passes the flag through).
+  // Same discipline as feedLine: newest on top, last 5 kept, fades out.
+  killFeed(killerName, victimName, opts = {}) {
+    const div = document.createElement('div');
+    div.className = `feed-line ${opts.cls || ''}`;
+    const killer = document.createElement('span');
+    killer.textContent = killerName;
+    const arrow = document.createElement('span');
+    arrow.textContent = opts.headshot ? ' ⌖ HEADSHOT ▸ ' : ' ▸ ';
+    if (opts.headshot) arrow.style.color = '#ffd24a';
+    const victim = document.createElement('span');
+    victim.textContent = victimName;
+    div.append(killer, arrow, victim);
+    if (opts.weaponName) {
+      const w = document.createElement('span');
+      w.textContent = `  [${opts.weaponName}]`;
+      w.style.color = 'var(--muted)';
+      div.append(w);
+    }
+    this.el.feed.prepend(div);
+    while (this.el.feed.children.length > 5) this.el.feed.lastChild.remove();
+    setTimeout(() => { div.style.opacity = '0'; }, 4200);
+    setTimeout(() => { div.remove(); }, 4900);
+  }
+
   banner(title, sub) {
     this.el.banner.textContent = title;
     this.el['banner-sub'].textContent = sub || '';
@@ -95,7 +122,7 @@ export class Hud {
     this.el.overlay.hidden = true;
   }
 
-  showBuy(money, weapons, owned, grenadePrice, grenades) {
+  showBuy(money, weapons, owned, grenadePrice, grenades, smokePrice = 0, smokes = 0) {
     this.el.buy.hidden = false;
     this.el['buy-money'].textContent = `FUNDS $${money}`;
     const list = this.el['buy-list'];
@@ -113,6 +140,13 @@ export class Hud {
     g.innerHTML = `<span class="buy-key">6</span><span class="buy-name">Cinder Grenade</span>` +
       `<span class="buy-stat">BLAST ${85} · HELD ${grenades}</span><span class="buy-price">$${grenadePrice}</span>`;
     list.appendChild(g);
+    if (smokePrice > 0) {
+      const sm = document.createElement('div');
+      sm.className = 'buy-row' + (money < smokePrice ? ' poor' : '');
+      sm.innerHTML = `<span class="buy-key">7</span><span class="buy-name">Soot Canister</span>` +
+        `<span class="buy-stat">SMOKE · BLOCKS SIGHT · HELD ${smokes}</span><span class="buy-price">$${smokePrice}</span>`;
+      list.appendChild(sm);
+    }
   }
 
   hideBuy() {

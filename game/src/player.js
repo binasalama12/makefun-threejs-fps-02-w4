@@ -22,7 +22,6 @@ export class Player {
     this.speed2d = 0;
     this.heat = 0;
     this.radius = 0.45;
-    this.name = 'You';
   }
 
   reset(spawn) {

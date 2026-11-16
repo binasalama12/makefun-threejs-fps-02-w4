@@ -6,6 +6,14 @@
 // rounds, earnings buy better foundry guns. Standing still or crouching
 // is what makes those guns shoot straight.
 //
+// Round-2 systems: bots walk NAMED lane routes (routes.js), hold the
+// lane at the end of them, and pursue your last seen position when
+// sight breaks; all damage — yours and the bots' — resolves through
+// one headshot model (hitmodel.js, ×4 standard, distinct head hitbox,
+// gold hitmarker, tagged kill feed); and the buyable Soot Canister
+// throws a smoke cloud that the bots' line-of-sight test truly honours
+// (smoke.js), so breaking sight with smoke makes bots lose you.
+//
 // The simulation runs on a fixed 60 Hz step, apart from rendering.
 // A deterministic screenshot mode (?shot=start|play|end&seed=N) poses one
 // still scene per mode and flags window.__shotReady after its first frame.
@@ -326,6 +334,7 @@ function playerShoot(now) {
         // head mesh is a distinct hitbox (userData.part === 'head').
         const res = resolveHit(def, ud.part, hit.distance);
         const died = bot.takeDamage(res.damage);
+        if (!died) bot.notice(player.pos); // a hit betrays the shooter's side
         hud.hitmark(res.isHead);
         sounds.hit(res.isHead);
         if (died) onKill(player, bot, { weaponName: def.name, headshot: res.isHead });
@@ -358,6 +367,7 @@ function botShoot(bot, target, dist) {
     end = head ? target.headCenter(new THREE.Vector3()) : target.chestCenter(new THREE.Vector3());
     const res = resolveHit(bot.weapon, part, dist);
     const died = target.takeDamage(res.damage);
+    if (!died && typeof target.notice === 'function') target.notice(bot.pos);
     if (target.isPlayer) { hud.damageFlash(); sounds.hurt(); }
     if (died) onKill(bot, target, { weaponName: bot.weapon.name, headshot: head });
   } else {

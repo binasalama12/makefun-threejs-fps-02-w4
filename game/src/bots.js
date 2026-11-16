@@ -109,6 +109,17 @@ export class Bot {
     this.heardFrom = fromPos;
   }
 
+  // Being shot is information too: a hit from an unseen attacker still
+  // tells the bot roughly where the shooter stands, so write it into
+  // the same tactical memory sight and sound use. A visible target
+  // still outranks this — pursuit only runs when nothing is in view.
+  notice(fromPos) {
+    if (!this.alive) return;
+    this.lastSeenPos.copy(fromPos);
+    this.hasLastSeen = true;
+    this.lastSeenAge = 0;
+  }
+
   takeDamage(amount) {
     if (!this.alive) return true;
     this.hp -= amount;
